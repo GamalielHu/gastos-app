@@ -1,0 +1,19 @@
+{
+  "name": "cuentas-claras",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "dev": "python3 -m http.server 8080 --directory www"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "firebase": "^11.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "esbuild": "^0.24.0"
+  }
+}

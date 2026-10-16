@@ -1,0 +1,8 @@
+{
+  "appId": "com.gamalielhu.cuentasclaras",
+  "appName": "Cuentas Claras",
+  "webDir": "dist",
+  "android": {
+    "backgroundColor": "#eef1f0"
+  }
+}

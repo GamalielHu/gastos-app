@@ -1,0 +1,5 @@
+node_modules/
+dist/
+android/
+www/js/firebase-backend.js
+.DS_Store
