@@ -100,6 +100,8 @@ async function boot() {
   S.backend.onStatus((st) => { S.status = st; paintStatus(); });
   const inp = document.getElementById('input-importar-excel');
   inp?.addEventListener('change', () => { const f = inp.files[0]; inp.value = ''; if (f) importarArchivo(f); });
+  const res = document.getElementById('input-restaurar');
+  res?.addEventListener('change', () => { const f = res.files[0]; res.value = ''; if (f) restaurarCopia(f); });
   S.backend.onAuth((u) => {
     S.user = u;
     unsubs.forEach((f) => f()); unsubs = [];
@@ -526,6 +528,7 @@ function vProyecto(id) {
 
 function vAjustes() {
   const a = ajustes();
+  const imp = importados();
   const grupo = (k, t, desc) => `
     <div class="etq-group"><h3>${t}</h3><p class="muted small">${desc}</p>
       <div class="chips">${a.etiquetas[k].map((e, i) => `<span class="chip etq">${esc(e)}<button aria-label="Quitar ${esc(e)}" data-deletq="${k}:${i}">${I.cerrar}</button></span>`).join('')}</div>
@@ -549,6 +552,13 @@ function vAjustes() {
     <section class="card">
       <div class="card-head"><h2>Importar histórico</h2><button class="btn small" id="importar">Elegir archivo</button></div>
       <p class="muted small">Excel (.xlsx) o CSV de la app del iPad, con fecha, cuenta, categoría, nota, importe y tipo. Las cuentas que no existan se crean con saldo inicial 0. Importar dos veces el mismo archivo no duplica movimientos.</p>
+      ${imp.movs.length ? `<div class="sheet-actions"><button class="btn danger" id="deshacer-imp">Deshacer importación</button></div>
+      <p class="muted small">Borra los ${imp.movs.length} movimientos que vinieron del archivo${imp.cuentas.length ? ` y ${imp.cuentas.length === 1 ? 'la cuenta que se creó' : `las ${imp.cuentas.length} cuentas que se crearon`} con él` : ''}. Lo que anotaste en la app se queda.</p>` : ''}
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Copia de seguridad</h2></div>
+      <p class="muted small">Guarda todos tus datos (cuentas, obras, movimientos y etiquetas) en un archivo. Con <b>Restaurar copia</b> vuelven a la app; no borra lo que anotaste después.</p>
+      <div class="sheet-actions"><button class="btn" id="copia-bajar">Descargar copia</button><button class="btn" id="copia-subir">Restaurar copia</button></div>
     </section>
     <section class="card">
       <div class="card-head"><h2>Moneda</h2></div>
@@ -633,6 +643,10 @@ function bindView(v) {
   });
   v.querySelector('#logout')?.addEventListener('click', () => S.backend.signOut());
   v.querySelector('#importar')?.addEventListener('click', () => document.getElementById('input-importar-excel').click());
+  v.querySelector('#copia-bajar')?.addEventListener('click', descargarCopia);
+  v.querySelector('#copia-subir')?.addEventListener('click', () => document.getElementById('input-restaurar').click());
+  const dz = v.querySelector('#deshacer-imp');
+  if (dz) armConfirm(dz, '¿Borrar lo importado? Toca otra vez', deshacerImportacion);
 }
 
 /* ---------- Hojas (formularios) ---------- */
@@ -784,6 +798,7 @@ function movSheet(mov, preset = {}) {
       const fecha = $('#mv-fecha').value;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) { msg('Elige una fecha.'); return null; }
       const d = { tipo: t, monto, fecha, cuentaId: $('#mv-cuenta').value, descripcion: $('#mv-desc').value.trim(), creado: mov?.creado || Date.now(), editado: Date.now() };
+      if (mov?.importKey) d.importKey = mov.importKey; // sigue contando como importado (para "Deshacer importación")
       if (t === 'transferencia') {
         d.cuentaDestinoId = $('#mv-destino').value;
         if (d.cuentaDestinoId === d.cuentaId) { msg('La cuenta de origen y la de destino deben ser distintas.'); return null; }
@@ -935,7 +950,7 @@ function importarFilas(rows) {
     const k = norm(nombre);
     if (!cuentas.has(k)) {
       const id = uuid();
-      nuevas.set(id, { nombre: txt(nombre).slice(0, 40), tipo: k.includes('efectivo') ? 'efectivo' : k.includes('banc') ? 'banco' : 'otra', saldoInicial: 0, orden: S.cuentas.length + nuevas.size, creado: ahora });
+      nuevas.set(id, { nombre: txt(nombre).slice(0, 40), tipo: k.includes('efectivo') ? 'efectivo' : k.includes('banc') ? 'banco' : 'otra', saldoInicial: 0, orden: S.cuentas.length + nuevas.size, creado: ahora, importado: ahora });
       cuentas.set(k, id);
     }
     return cuentas.get(k);
@@ -1012,6 +1027,62 @@ async function importarArchivo(file) {
   } catch (e) {
     console.error(e);
     toast('No se pudo importar: ' + (e.message || e));
+  }
+}
+
+// Lo que vino de una importación: movimientos con importKey y las cuentas que se crearon
+// en esa importación (si nada anotado a mano las usa).
+function importados() {
+  const movs = S.movs.filter((m) => m.importKey);
+  const tandas = new Set(movs.map((m) => m.editado));
+  const usadas = new Set(S.movs.filter((m) => !m.importKey).flatMap((m) => [m.cuentaId, m.cuentaDestinoId]));
+  const cuentas = S.cuentas.filter((c) => (c.importado || tandas.has(c.creado)) && !usadas.has(c.id));
+  return { movs, cuentas };
+}
+
+function deshacerImportacion() {
+  const { movs, cuentas } = importados();
+  S.backend.bulkRemove('movimientos', movs.map((m) => m.id));
+  if (cuentas.length) S.backend.bulkRemove('cuentas', cuentas.map((c) => c.id));
+  toast(`Importación deshecha: ${movs.length} movimientos borrados`);
+}
+
+/* ---------- Copia de seguridad ---------- */
+async function descargarCopia() {
+  const nombre = `cuentas-claras-${today()}.json`;
+  const texto = JSON.stringify({ app: 'cuentas-claras', version: 1, exportado: new Date().toISOString(),
+    ajustes: S.ajustes || null, cuentas: S.cuentas, proyectos: S.proyectos, movimientos: S.movs });
+  try {
+    if (window.Capacitor?.isNativePlatform?.()) {
+      // Android: el WebView no descarga archivos, se guarda y se abre "Compartir".
+      const { compartirArchivo } = await import('./nativo.js');
+      await compartirArchivo(nombre, texto);
+      return;
+    }
+    const file = new File([texto], nombre, { type: 'application/json' });
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: nombre }); return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = nombre;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } catch (e) {
+    if (e?.name === 'AbortError' || /cancel/i.test(e?.message || '')) return;
+    console.error(e);
+    toast('No se pudo guardar la copia: ' + (e?.message || e));
+  }
+}
+
+async function restaurarCopia(file) {
+  try {
+    const d = JSON.parse(await file.text());
+    if (d?.app !== 'cuentas-claras' || !Array.isArray(d.movimientos)) throw new Error('el archivo no es una copia de Cuentas Claras');
+    const items = (l) => (Array.isArray(l) ? l : []).filter((x) => x && x.id).map(({ id, ...data }) => ({ id: String(id), data }));
+    for (const col of ['cuentas', 'proyectos', 'movimientos']) { const l = items(d[col]); if (l.length) S.backend.bulk(col, l); }
+    if (d.ajustes) S.backend.saveAjustes(d.ajustes);
+    toast(`Copia restaurada: ${d.movimientos.length} movimientos`);
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo restaurar: ' + (e.message || e));
   }
 }
 
