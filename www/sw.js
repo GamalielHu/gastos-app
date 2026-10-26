@@ -2,7 +2,7 @@
 // Los datos los guarda Firebase por su cuenta; aquí solo van los archivos.
 const VERSION = 'cc-__BUILD__';
 const FILES = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'js/main.js', 'js/util.js', 'js/pie.js', 'js/icons.js',
-  'js/local-backend.js', 'js/firebase-config.js', 'js/firebase-backend.js', 'js/xlsx-lector.js', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
+  'js/local-backend.js', 'js/firebase-config.js', 'js/firebase-backend.js', 'js/xlsx-lector.js', 'js/nativo.js', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => Promise.all(FILES.map((f) => c.add(f).catch(() => {})))).then(() => self.skipWaiting()));

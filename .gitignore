@@ -3,4 +3,5 @@ dist/
 android/
 www/js/firebase-backend.js
 www/js/xlsx-lector.js
+www/js/nativo.js
 .DS_Store

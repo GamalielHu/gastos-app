@@ -74,6 +74,13 @@ export function createFirebaseBackend(config) {
         batch.commit().catch(fail);
       }
     },
+    bulkRemove(name, ids) {
+      for (let i = 0; i < ids.length; i += 450) {
+        const batch = writeBatch(fs);
+        for (const id of ids.slice(i, i + 450)) batch.delete(ref(name, id));
+        batch.commit().catch(fail);
+      }
+    },
     saveAjustes(data) { setDoc(ref('ajustes', 'general'), data, { merge: true }).catch(fail); },
   };
 }
