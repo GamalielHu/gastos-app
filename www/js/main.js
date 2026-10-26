@@ -799,6 +799,7 @@ function movSheet(mov, preset = {}) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) { msg('Elige una fecha.'); return null; }
       const d = { tipo: t, monto, fecha, cuentaId: $('#mv-cuenta').value, descripcion: $('#mv-desc').value.trim(), creado: mov?.creado || Date.now(), editado: Date.now() };
       if (mov?.importKey) d.importKey = mov.importKey; // sigue contando como importado (para "Deshacer importación")
+      if (mov?.origen) d.origen = mov.origen;
       if (t === 'transferencia') {
         d.cuentaDestinoId = $('#mv-destino').value;
         if (d.cuentaDestinoId === d.cuentaId) { msg('La cuenta de origen y la de destino deben ser distintas.'); return null; }
@@ -920,6 +921,7 @@ const COLS_IMPORT = {
   monto: ['importe', 'monto', 'amount', 'bob'],
   tipo: ['ingreso/gasto', 'tipo', 'type'],
 };
+const r2 = (n) => Math.round(n * 100) / 100;
 
 // "Dinero gastado"/"Dinero ingresado" son las dos mitades de una transferencia
 // (la categoría es la otra cuenta); "Saldo de Receitas"/"Modificar saldo" fija el saldo inicial.
@@ -933,7 +935,8 @@ function tipoImport(t, monto) {
   return monto < 0 ? 'gasto' : 'ingreso';
 }
 
-function importarFilas(rows) {
+// Lee las filas del archivo y las deja listas para importar, sin escribir nada todavía.
+function analizarFilas(rows) {
   const hi = rows.findIndex((r) => r && r.some((x) => COLS_IMPORT.monto.includes(norm(x))));
   if (hi < 0) throw new Error('no encontré la columna de importe o monto');
   const h = rows[hi].map((x) => norm(x));
@@ -941,25 +944,18 @@ function importarFilas(rows) {
   for (const [k, alias] of Object.entries(COLS_IMPORT)) { const a = alias.find((x) => h.includes(x)); if (a) ix[k] = h.indexOf(a); }
   if (ix.fecha == null || ix.cuenta == null) throw new Error('faltan las columnas de fecha o cuenta');
 
-  const ahora = Date.now();
   const txt = (v) => (v == null ? '' : String(v).trim());
   const cel = (r, k) => (ix[k] == null ? null : r[ix[k]]);
-  const cuentas = new Map(S.cuentas.map((c) => [norm(c.nombre), c.id]));
-  const nuevas = new Map(); // id -> datos de la cuenta creada
-  const cuentaId = (nombre) => {
+  const nombres = new Map(); // nombre normalizado -> { nombre, n }
+  const cuentaDe = (nombre) => {
     const k = norm(nombre);
-    if (!cuentas.has(k)) {
-      const id = uuid();
-      nuevas.set(id, { nombre: txt(nombre).slice(0, 40), tipo: k.includes('efectivo') ? 'efectivo' : k.includes('banc') ? 'banco' : 'otra', saldoInicial: 0, orden: S.cuentas.length + nuevas.size, creado: ahora, importado: ahora });
-      cuentas.set(k, id);
-    }
-    return cuentas.get(k);
+    const e = nombres.get(k) || { nombre: txt(nombre), n: 0 };
+    e.n++; nombres.set(k, e);
+    return k;
   };
   const ya = new Set(S.movs.map((m) => m.importKey).filter(Boolean));
-  const etq = structuredClone(ajustes().etiquetas);
-  let etqCambio = false;
-  const movs = [];
   const enArchivo = new Map(); // filas idénticas dentro del archivo: se numeran para no confundirlas
+  const regs = [];
   let omitidos = 0, repetidos = 0;
 
   // Filas del mismo segundo: se separan unos milisegundos para conservar el orden del archivo
@@ -975,75 +971,153 @@ function importarFilas(rows) {
     const mv = cel(r, 'monto');
     const montoNum = typeof mv === 'number' ? mv : parseMonto(txt(mv).replace(/^[−-]/, '')) * (/^[−-]/.test(txt(mv)) ? -1 : 1);
     if (!f || !Number.isFinite(montoNum) || !montoNum || !txt(cel(r, 'cuenta'))) { omitidos++; continue; }
-    const monto = Math.round(Math.abs(montoNum) * 100) / 100;
     const t = tipoImport(cel(r, 'tipo'), montoNum);
     if (t === 'transf-par') continue; // su otra mitad ("Dinero gastado") trae origen y destino
+    const monto = r2(Math.abs(montoNum));
     const cat = txt(cel(r, 'categoria')), sub = txt(cel(r, 'subcategoria'));
     const descripcion = [txt(cel(r, 'nota')), txt(cel(r, 'descripcion'))].filter(Boolean).join(' · ').slice(0, 120);
     const clave = [f.ts, norm(cel(r, 'cuenta')), monto, t, norm(cat), norm(descripcion)].join('|');
     enArchivo.set(clave, (enArchivo.get(clave) || 0) + 1);
     const importKey = `${clave}#${enArchivo.get(clave)}`;
     if (ya.has(importKey)) { repetidos++; continue; }
-    const cid = cuentaId(cel(r, 'cuenta'));
+    if (t === 'transf' && (!cat || norm(cat) === norm(cel(r, 'cuenta')))) { omitidos++; continue; }
 
-    if (t === 'ajuste') {
-      // Solo para cuentas que crea esta importación; si ya existía, su saldo inicial no se toca.
-      if (nuevas.has(cid)) nuevas.get(cid).saldoInicial = Math.round((nuevas.get(cid).saldoInicial + montoNum) * 100) / 100;
-      else repetidos++;
+    const reg = { t, monto, montoNum, fecha: f.fecha, creado: f.ts + Math.round((999 * (nuevoPrimero ? n - i : i)) / n), descripcion, importKey, cuenta: cuentaDe(cel(r, 'cuenta')) };
+    if (t === 'transf') reg.destino = cuentaDe(cat);
+    else if (t !== 'ajuste') reg.etiqueta = (sub ? `${cat} · ${sub}` : cat).slice(0, 40) || 'Otros';
+    regs.push(reg);
+  }
+  return { regs, nombres, omitidos, repetidos };
+}
+
+// Cuenta propuesta para un nombre del archivo: el alias guardado o una cuenta con el mismo nombre.
+function cuentaSugerida(k) {
+  const a = (S.ajustes?.aliasCuentas || {})[k];
+  if (a && cuentaById(a)) return a;
+  return S.cuentas.find((c) => norm(c.nombre) === k)?.id || '';
+}
+
+// Hoja para elegir a qué cuenta va cada cuenta del archivo antes de importar.
+function importarSheet(an) {
+  if (!an.regs.length) return toast(`Nada nuevo para importar${an.repetidos ? ` · ${an.repetidos} ya estaban` : ''}`);
+  const nombres = [...an.nombres].sort((a, b) => b[1].n - a[1].n);
+  const fechas = an.regs.map((r) => r.fecha).sort();
+  const opts = (sel) => '<option value="">Crear cuenta nueva</option>'
+    + cuentasOrden().map((c) => `<option value="${c.id}" ${sel === c.id ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
+  const body = `
+  <form id="imp-form" novalidate>
+    <p class="muted small">${an.regs.length} movimientos del ${fechaCorta(fechas[0])} al ${fechaCorta(fechas[fechas.length - 1])}${an.repetidos ? ` · ${an.repetidos} ya estaban` : ''}. Elige a qué cuenta va cada una del archivo.</p>
+    ${nombres.map(([k, v], i) => `<label class="field"><span>${esc(v.nombre)} <small class="muted">· ${v.n} mov.</small></span><select data-imp="${i}">${opts(cuentaSugerida(k))}</select></label>`).join('')}
+    <label class="check"><input type="checkbox" id="imp-saldo" checked><span>Mantener el saldo de hoy en las cuentas que ya tengo (se ajusta su saldo inicial)</span></label>
+    <div class="sheet-actions"><button type="button" class="btn" data-close>Cancelar</button><button type="submit" class="btn primary">Importar</button></div>
+  </form>`;
+  openSheet('Importar histórico', body, (sh) => {
+    sh.querySelector('#imp-form').onsubmit = (ev) => {
+      ev.preventDefault();
+      const mapa = new Map(nombres.map(([k], i) => [k, sh.querySelector(`[data-imp="${i}"]`).value]));
+      const r = aplicarImport(an, mapa, sh.querySelector('#imp-saldo').checked);
+      closeSheet();
+      toast(`${r.n} movimientos importados`
+        + (r.cuentas ? ` · ${r.cuentas} cuenta${r.cuentas === 1 ? '' : 's'} nueva${r.cuentas === 1 ? '' : 's'}` : '')
+        + (r.ajustadas ? ` · saldo de hoy sin cambios en ${r.ajustadas} cuenta${r.ajustadas === 1 ? '' : 's'}` : '')
+        + (r.omitidos ? ` · ${r.omitidos} filas sin datos válidos` : ''));
+    };
+  });
+}
+
+function aplicarImport(an, mapa, mantenerSaldo) {
+  const ahora = Date.now();
+  const nuevas = new Map(); // nombre normalizado -> { id, data }
+  const idDe = (k) => {
+    if (mapa.get(k)) return mapa.get(k);
+    if (!nuevas.has(k)) {
+      const nombre = an.nombres.get(k).nombre;
+      nuevas.set(k, { id: uuid(), data: { nombre: nombre.slice(0, 40), tipo: k.includes('efectivo') ? 'efectivo' : k.includes('banc') ? 'banco' : 'otra', saldoInicial: 0, orden: S.cuentas.length + nuevas.size, creado: ahora, importado: ahora } });
+    }
+    return nuevas.get(k).id;
+  };
+  const etq = structuredClone(ajustes().etiquetas);
+  let etqCambio = false, omitidos = an.omitidos;
+  const delta = new Map(); // cuentaId -> efecto neto de lo importado (ingresos − gastos ± transferencias)
+  const suma = (id, v) => delta.set(id, r2((delta.get(id) || 0) + v));
+  const movs = [];
+
+  for (const r of an.regs) {
+    const cid = idDe(r.cuenta);
+    if (r.t === 'ajuste') {
+      // Solo fija el saldo inicial de una cuenta nueva; en una existente se respeta su saldo.
+      const nv = [...nuevas.values()].find((x) => x.id === cid);
+      if (nv) nv.data.saldoInicial = r2(nv.data.saldoInicial + r.montoNum);
       continue;
     }
-    const creado = f.ts + Math.round((999 * (nuevoPrimero ? n - i : i)) / n);
-    const base = { monto, fecha: f.fecha, cuentaId: cid, descripcion, creado, editado: ahora, importKey };
-    if (t === 'transf') {
-      if (!cat) { omitidos++; continue; }
-      const dest = cuentaId(cat);
+    const base = { monto: r.monto, fecha: r.fecha, cuentaId: cid, descripcion: r.descripcion, creado: r.creado, editado: ahora, importKey: r.importKey, origen: 'import_ipad' };
+    if (r.t === 'transf') {
+      const dest = idDe(r.destino);
       if (dest === cid) { omitidos++; continue; }
       movs.push({ id: uuid(), data: { tipo: 'transferencia', ...base, cuentaDestinoId: dest, proyectoId: null, etiqueta: null } });
+      suma(cid, -r.monto); suma(dest, r.monto);
     } else {
-      const etiqueta = (sub ? `${cat} · ${sub}` : cat).slice(0, 40) || 'Otros';
-      if (!etq[t].some((x) => norm(x) === norm(etiqueta))) { etq[t].push(etiqueta); etqCambio = true; }
-      movs.push({ id: uuid(), data: { tipo: t, ...base, etiqueta: etq[t].find((x) => norm(x) === norm(etiqueta)), proyectoId: null } });
+      if (!etq[r.t].some((x) => norm(x) === norm(r.etiqueta))) { etq[r.t].push(r.etiqueta); etqCambio = true; }
+      movs.push({ id: uuid(), data: { tipo: r.t, ...base, etiqueta: etq[r.t].find((x) => norm(x) === norm(r.etiqueta)), proyectoId: null } });
+      suma(cid, r.t === 'ingreso' ? r.monto : -r.monto);
     }
   }
 
   // Escrituras sin esperar: aparecen al instante y Firestore sincroniza después.
-  if (nuevas.size) S.backend.bulk('cuentas', [...nuevas].map(([id, data]) => ({ id, data })));
+  if (nuevas.size) S.backend.bulk('cuentas', [...nuevas.values()]);
   if (movs.length) S.backend.bulk('movimientos', movs);
-  if (etqCambio) S.backend.saveAjustes({ etiquetas: etq });
-  return { n: movs.length, cuentas: nuevas.size, omitidos, repetidos };
+
+  // Saldo de hoy intacto: saldoInicial −= Δ. ajusteImport guarda Δ para "Deshacer importación".
+  let ajustadas = 0;
+  if (mantenerSaldo) {
+    const creadas = new Set([...nuevas.values()].map((x) => x.id));
+    for (const [id, d] of delta) {
+      const c = cuentaById(id);
+      if (!c || !d || creadas.has(id)) continue;
+      S.backend.update('cuentas', id, { saldoInicial: r2((Number(c.saldoInicial) || 0) - d), ajusteImport: r2((Number(c.ajusteImport) || 0) + d) });
+      ajustadas++;
+    }
+  }
+
+  // Recuerda la asociación para la próxima importación ("Cuenta 1" -> cuenta del banco).
+  const alias = { ...(S.ajustes?.aliasCuentas || {}) };
+  let aliasCambio = false;
+  for (const [k, id] of mapa) if (id && alias[k] !== id) { alias[k] = id; aliasCambio = true; }
+  if (etqCambio || aliasCambio) S.backend.saveAjustes({ ...(etqCambio ? { etiquetas: etq } : {}), ...(aliasCambio ? { aliasCuentas: alias } : {}) });
+  return { n: movs.length, cuentas: nuevas.size, ajustadas, omitidos };
 }
 
 async function importarArchivo(file) {
-  toast('Leyendo archivo…');
   try {
     let rows;
     if (/\.csv$/i.test(file.name) || file.type === 'text/csv') rows = parseCsv(await file.text());
     else { const { leerXlsx } = await import('./xlsx-lector.js'); rows = leerXlsx(await file.arrayBuffer()); }
-    const r = importarFilas(rows);
-    toast(`${r.n} movimientos importados`
-      + (r.cuentas ? ` · ${r.cuentas} cuenta${r.cuentas === 1 ? '' : 's'} nueva${r.cuentas === 1 ? '' : 's'}` : '')
-      + (r.repetidos ? ` · ${r.repetidos} ya estaban` : '')
-      + (r.omitidos ? ` · ${r.omitidos} filas sin datos válidos` : ''));
+    importarSheet(analizarFilas(rows));
   } catch (e) {
     console.error(e);
     toast('No se pudo importar: ' + (e.message || e));
   }
 }
 
-// Lo que vino de una importación: movimientos con importKey y las cuentas que se crearon
+// Lo que vino de una importación: movimientos importados y las cuentas que se crearon
 // en esa importación (si nada anotado a mano las usa).
 function importados() {
-  const movs = S.movs.filter((m) => m.importKey);
+  const movs = S.movs.filter((m) => m.importKey || m.origen === 'import_ipad');
   const tandas = new Set(movs.map((m) => m.editado));
-  const usadas = new Set(S.movs.filter((m) => !m.importKey).flatMap((m) => [m.cuentaId, m.cuentaDestinoId]));
+  const usadas = new Set(S.movs.filter((m) => !m.importKey && m.origen !== 'import_ipad').flatMap((m) => [m.cuentaId, m.cuentaDestinoId]));
   const cuentas = S.cuentas.filter((c) => (c.importado || tandas.has(c.creado)) && !usadas.has(c.id));
   return { movs, cuentas };
 }
 
 function deshacerImportacion() {
   const { movs, cuentas } = importados();
+  const borrar = new Set(cuentas.map((c) => c.id));
   S.backend.bulkRemove('movimientos', movs.map((m) => m.id));
-  if (cuentas.length) S.backend.bulkRemove('cuentas', cuentas.map((c) => c.id));
+  if (cuentas.length) S.backend.bulkRemove('cuentas', [...borrar]);
+  // Devuelve el saldo inicial que se ajustó al importar.
+  for (const c of S.cuentas) {
+    if (c.ajusteImport && !borrar.has(c.id)) S.backend.update('cuentas', c.id, { saldoInicial: r2((Number(c.saldoInicial) || 0) + c.ajusteImport), ajusteImport: 0 });
+  }
   toast(`Importación deshecha: ${movs.length} movimientos borrados`);
 }
 
