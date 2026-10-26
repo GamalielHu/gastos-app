@@ -50,6 +50,74 @@ export function diaLargo(iso) {
 export const fechaCorta = (iso) => fCorta.format(parseIso(iso));
 
 export const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+export const uuid = () => (globalThis.crypto?.randomUUID ? crypto.randomUUID() : uid());
+
+// Orden cronológico (más antiguo primero): fecha y, dentro del día, hora en que se anotó.
+export const ordenCrono = (list) => [...list].sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.creado || 0) - (b.creado || 0) || String(a.id).localeCompare(String(b.id)));
+
+// Saldo de cada cuenta justo después de cada movimiento: Map movId -> { cuentaId: saldo }.
+export function saldosPosteriores(movs, cuentas) {
+  const s = new Map(cuentas.map((c) => [c.id, Number(c.saldoInicial) || 0]));
+  const out = new Map();
+  const mover = (d, id, delta) => {
+    if (!s.has(id)) return;
+    const v = Math.round((s.get(id) + delta) * 100) / 100;
+    s.set(id, v); d[id] = v;
+  };
+  for (const m of ordenCrono(movs)) {
+    const d = {};
+    if (m.tipo === 'ingreso') mover(d, m.cuentaId, m.monto);
+    else if (m.tipo === 'gasto') mover(d, m.cuentaId, -m.monto);
+    else if (m.tipo === 'transferencia') { mover(d, m.cuentaId, -m.monto); mover(d, m.cuentaDestinoId, m.monto); }
+    out.set(m.id, d);
+  }
+  return out;
+}
+
+// Fecha de una celda (Date, número de serie de Excel o texto) -> { fecha: 'AAAA-MM-DD', ts }.
+export function parseFechaHora(v) {
+  const mk = (y, mo, d, h = 0, mi = 0, se = 0) => {
+    const dt = new Date(y, mo - 1, d, h, mi, se);
+    if (Number.isNaN(dt.getTime()) || dt.getMonth() !== mo - 1) return null;
+    return { fecha: isoDate(dt), ts: dt.getTime() };
+  };
+  if (v instanceof Date) return mk(v.getFullYear(), v.getMonth() + 1, v.getDate(), v.getHours(), v.getMinutes(), v.getSeconds());
+  if (typeof v === 'number' && v > 0) {
+    const d = new Date(Math.round((v - 25569) * 864e5)); // el serial no tiene zona horaria: se lee en UTC
+    return mk(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds());
+  }
+  const t = String(v ?? '').trim();
+  let r = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (r) return mk(+r[1], +r[2], +r[3], +(r[4] || 0), +(r[5] || 0), +(r[6] || 0));
+  r = t.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/); // día primero (es-BO)
+  if (r) return mk(+r[3] < 100 ? 2000 + +r[3] : +r[3], +r[2], +r[1], +(r[4] || 0), +(r[5] || 0), +(r[6] || 0));
+  return null;
+}
+
+// CSV a filas. Detecta el separador (, ; o tabulación) y respeta las comillas.
+export function parseCsv(txt) {
+  const s = String(txt).replace(/^﻿/, '');
+  const first = s.slice(0, s.indexOf('\n') >>> 0);
+  const sep = [';', '\t', ','].map((c) => [c, first.split(c).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else q = false; }
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === sep) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && s[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some((x) => x.trim())) rows.push(row);
+      row = [];
+    } else cell += c;
+  }
+  row.push(cell);
+  if (row.some((x) => x.trim())) rows.push(row);
+  return rows;
+}
 
 export const norm = (s) => String(s ?? '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 

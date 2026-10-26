@@ -6,12 +6,15 @@ import { cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 rmSync('dist', { recursive: true, force: true });
 cpSync('www', 'dist', { recursive: true });
 rmSync('dist/js/firebase-backend.src.js', { force: true });
+rmSync('dist/js/xlsx-lector.src.js', { force: true });
 
-await build({
-  entryPoints: ['www/js/firebase-backend.src.js'],
-  bundle: true, format: 'esm', minify: true, target: 'es2020',
-  outfile: 'dist/js/firebase-backend.js', legalComments: 'none',
+const empaquetar = (src, out) => build({
+  entryPoints: [src], bundle: true, format: 'esm', minify: true, target: 'es2020',
+  outfile: out, legalComments: 'none',
 });
+await empaquetar('www/js/firebase-backend.src.js', 'dist/js/firebase-backend.js');
+// Lector de Excel: se carga solo al importar un .xlsx.
+await empaquetar('www/js/xlsx-lector.src.js', 'dist/js/xlsx-lector.js');
 
 const sw = readFileSync('dist/sw.js', 'utf8').replace('__BUILD__', Date.now().toString(36));
 writeFileSync('dist/sw.js', sw);
