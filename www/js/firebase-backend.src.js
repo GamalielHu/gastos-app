@@ -10,7 +10,7 @@ import {
 } from 'firebase/auth';
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
-  collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc,
+  collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch,
 } from 'firebase/firestore';
 
 export function createFirebaseBackend(config) {
@@ -66,6 +66,14 @@ export function createFirebaseBackend(config) {
     set(name, id, data) { setDoc(ref(name, id), data).catch(fail); },
     update(name, id, data) { updateDoc(ref(name, id), data).catch(fail); },
     remove(name, id) { deleteDoc(ref(name, id)).catch(fail); },
+    // Muchas escrituras de una vez (importación), en lotes de 450 (límite de Firestore: 500).
+    bulk(name, items) {
+      for (let i = 0; i < items.length; i += 450) {
+        const batch = writeBatch(fs);
+        for (const { id, data } of items.slice(i, i + 450)) batch.set(ref(name, id), data);
+        batch.commit().catch(fail);
+      }
+    },
     saveAjustes(data) { setDoc(ref('ajustes', 'general'), data, { merge: true }).catch(fail); },
   };
 }

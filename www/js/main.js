@@ -1,5 +1,5 @@
 // Cuentas Claras — registro de gastos e ingresos por cuenta y por proyecto.
-import { esc, money, num, signed, parseMonto, today, isoDate, mesNombre, diaLargo, fechaCorta, norm, setMoneda, getMoneda } from './util.js';
+import { esc, money, num, signed, parseMonto, today, isoDate, mesNombre, diaLargo, fechaCorta, norm, setMoneda, getMoneda, uuid, saldosPosteriores, parseFechaHora, parseCsv } from './util.js';
 import { pieChart } from './pie.js';
 import { I, iconCuenta } from './icons.js';
 import { createLocalBackend } from './local-backend.js';
@@ -40,7 +40,7 @@ const cuentaById = (id) => S.cuentas.find((c) => c.id === id);
 const proyById = (id) => S.proyectos.find((p) => p.id === id);
 const cuentasOrden = () => [...S.cuentas].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0) || a.nombre.localeCompare(b.nombre));
 const proyOrden = () => [...S.proyectos].sort((a, b) => (a.estado === 'cerrado') - (b.estado === 'cerrado') || (b.creado || 0) - (a.creado || 0));
-const movOrden = (list) => [...list].sort((a, b) => b.fecha.localeCompare(a.fecha) || (b.creado || 0) - (a.creado || 0));
+const movOrden = (list) => [...list].sort((a, b) => b.fecha.localeCompare(a.fecha) || (b.creado || 0) - (a.creado || 0) || String(b.id).localeCompare(String(a.id)));
 
 function saldo(c) {
   let s = Number(c.saldoInicial) || 0;
@@ -53,6 +53,17 @@ function saldo(c) {
     }
   }
   return Math.round(s * 100) / 100;
+}
+
+// Saldo de la cuenta después de un movimiento (se recalcula solo cuando cambian los datos).
+let saldoMemo = { movs: null, cuentas: null, map: new Map() };
+function saldoTras(m) {
+  if (saldoMemo.movs !== S.movs || saldoMemo.cuentas !== S.cuentas) saldoMemo = { movs: S.movs, cuentas: S.cuentas, map: saldosPosteriores(S.movs, S.cuentas) };
+  const d = saldoMemo.map.get(m.id);
+  if (!d) return null;
+  // En una transferencia se muestra la cuenta de origen, salvo que se esté filtrando por la de destino.
+  const id = m.tipo === 'transferencia' && route()[0] === 'movimientos' && S.filtro.cuenta === m.cuentaDestinoId ? m.cuentaDestinoId : m.cuentaId;
+  return d[id] ?? null;
 }
 
 function enPeriodo(fecha) {
@@ -87,6 +98,8 @@ async function boot() {
     S.backend = createLocalBackend();
   }
   S.backend.onStatus((st) => { S.status = st; paintStatus(); });
+  const inp = document.getElementById('input-importar-excel');
+  inp?.addEventListener('change', () => { const f = inp.files[0]; inp.value = ''; if (f) importarArchivo(f); });
   S.backend.onAuth((u) => {
     S.user = u;
     unsubs.forEach((f) => f()); unsubs = [];
@@ -266,10 +279,11 @@ function movRow(m, { showProy = true } = {}) {
   if (m.cantidad) sub.push(`${num(m.cantidad).replace(/,00$/, '')} ${esc(m.unidad || '')}`);
   const desc = m.descripcion ? `<span class="mr-desc">${esc(m.descripcion)}</span>` : '';
   const chip = showProy && p ? `<span class="chip obra">${esc(p.nombre)}</span>` : '';
+  const st = saldoTras(m);
   return `<button class="mov-row" data-mov="${m.id}">
-    <span class="mr-ic ${m.tipo}">${m.tipo === 'transferencia' ? I.transfer : esc((m.etiqueta || '?').charAt(0).toUpperCase())}</span>
+    <span class="mr-ic ${m.tipo}">${m.tipo === 'transferencia' ? I.transfer : esc([...(m.etiqueta || '?')][0].toUpperCase())}</span>
     <span class="mr-main"><span class="mr-title">${titulo}${chip}</span>${desc}<span class="mr-sub">${sub.join(' · ')}</span></span>
-    <span class="mr-amt ${m.tipo}">${signed(m.monto, m.tipo)}</span>
+    <span class="mr-amt-col"><span class="mr-amt ${m.tipo}">${signed(m.monto, m.tipo)}</span>${st != null ? `<small class="saldo-posterior">Saldo ${money(st)}</small>` : ''}</span>
   </button>`;
 }
 
@@ -533,6 +547,10 @@ function vAjustes() {
       <p class="muted small">Quitar una etiqueta no borra los movimientos que ya la usan.</p>
     </section>
     <section class="card">
+      <div class="card-head"><h2>Importar histórico</h2><button class="btn small" id="importar">Elegir archivo</button></div>
+      <p class="muted small">Excel (.xlsx) o CSV de la app del iPad, con fecha, cuenta, categoría, nota, importe y tipo. Las cuentas que no existan se crean con saldo inicial 0. Importar dos veces el mismo archivo no duplica movimientos.</p>
+    </section>
+    <section class="card">
       <div class="card-head"><h2>Moneda</h2></div>
       <form class="inline-add" id="moneda-form"><input id="moneda" value="${esc(a.moneda)}" maxlength="5" aria-label="Símbolo de moneda"><button class="btn small" type="submit">Guardar</button></form>
     </section>
@@ -614,6 +632,7 @@ function bindView(v) {
     S.backend.saveAjustes({ moneda: m }); setMoneda(m); toast('Moneda guardada');
   });
   v.querySelector('#logout')?.addEventListener('click', () => S.backend.signOut());
+  v.querySelector('#importar')?.addEventListener('click', () => document.getElementById('input-importar-excel').click());
 }
 
 /* ---------- Hojas (formularios) ---------- */
@@ -873,6 +892,127 @@ function proyectoSheet(p) {
       toast('Proyecto eliminado'); closeSheet(() => { location.hash = 'proyectos'; });
     });
   });
+}
+
+/* ---------- Importar histórico (Excel/CSV de la app del iPad) ---------- */
+const COLS_IMPORT = {
+  fecha: ['fecha', 'segun un periodo', 'date'],
+  cuenta: ['cuenta', 'cuentas', 'account'],
+  categoria: ['categoria', 'etiqueta', 'category'],
+  subcategoria: ['subcategoria', 'subcategorias'],
+  nota: ['nota', 'note'],
+  descripcion: ['descripcion', 'description'],
+  monto: ['importe', 'monto', 'amount', 'bob'],
+  tipo: ['ingreso/gasto', 'tipo', 'type'],
+};
+
+// "Dinero gastado"/"Dinero ingresado" son las dos mitades de una transferencia
+// (la categoría es la otra cuenta); "Saldo de Receitas"/"Modificar saldo" fija el saldo inicial.
+function tipoImport(t, monto) {
+  const s = norm(t);
+  if (s.includes('dinero gastado') || s.includes('transfer')) return 'transf';
+  if (s.includes('dinero ingresado')) return 'transf-par';
+  if (s.includes('saldo')) return 'ajuste';
+  if (s.startsWith('gasto') || s.startsWith('expense')) return 'gasto';
+  if (s.startsWith('ingreso') || s.startsWith('income')) return 'ingreso';
+  return monto < 0 ? 'gasto' : 'ingreso';
+}
+
+function importarFilas(rows) {
+  const hi = rows.findIndex((r) => r && r.some((x) => COLS_IMPORT.monto.includes(norm(x))));
+  if (hi < 0) throw new Error('no encontré la columna de importe o monto');
+  const h = rows[hi].map((x) => norm(x));
+  const ix = {};
+  for (const [k, alias] of Object.entries(COLS_IMPORT)) { const a = alias.find((x) => h.includes(x)); if (a) ix[k] = h.indexOf(a); }
+  if (ix.fecha == null || ix.cuenta == null) throw new Error('faltan las columnas de fecha o cuenta');
+
+  const ahora = Date.now();
+  const txt = (v) => (v == null ? '' : String(v).trim());
+  const cel = (r, k) => (ix[k] == null ? null : r[ix[k]]);
+  const cuentas = new Map(S.cuentas.map((c) => [norm(c.nombre), c.id]));
+  const nuevas = new Map(); // id -> datos de la cuenta creada
+  const cuentaId = (nombre) => {
+    const k = norm(nombre);
+    if (!cuentas.has(k)) {
+      const id = uuid();
+      nuevas.set(id, { nombre: txt(nombre).slice(0, 40), tipo: k.includes('efectivo') ? 'efectivo' : k.includes('banc') ? 'banco' : 'otra', saldoInicial: 0, orden: S.cuentas.length + nuevas.size, creado: ahora });
+      cuentas.set(k, id);
+    }
+    return cuentas.get(k);
+  };
+  const ya = new Set(S.movs.map((m) => m.importKey).filter(Boolean));
+  const etq = structuredClone(ajustes().etiquetas);
+  let etqCambio = false;
+  const movs = [];
+  const enArchivo = new Map(); // filas idénticas dentro del archivo: se numeran para no confundirlas
+  let omitidos = 0, repetidos = 0;
+
+  // Filas del mismo segundo: se separan unos milisegundos para conservar el orden del archivo
+  // (la app del iPad exporta del más nuevo al más antiguo).
+  const datos = rows.slice(hi + 1);
+  const fechas = datos.map((r) => (r ? parseFechaHora(cel(r, 'fecha')) : null)).filter(Boolean);
+  const nuevoPrimero = fechas.length > 1 && fechas[0].ts > fechas[fechas.length - 1].ts;
+  const n = datos.length || 1;
+
+  for (const [i, r] of datos.entries()) {
+    if (!r || !r.some((x) => txt(x))) continue;
+    const f = parseFechaHora(cel(r, 'fecha'));
+    const mv = cel(r, 'monto');
+    const montoNum = typeof mv === 'number' ? mv : parseMonto(txt(mv).replace(/^[−-]/, '')) * (/^[−-]/.test(txt(mv)) ? -1 : 1);
+    if (!f || !Number.isFinite(montoNum) || !montoNum || !txt(cel(r, 'cuenta'))) { omitidos++; continue; }
+    const monto = Math.round(Math.abs(montoNum) * 100) / 100;
+    const t = tipoImport(cel(r, 'tipo'), montoNum);
+    if (t === 'transf-par') continue; // su otra mitad ("Dinero gastado") trae origen y destino
+    const cat = txt(cel(r, 'categoria')), sub = txt(cel(r, 'subcategoria'));
+    const descripcion = [txt(cel(r, 'nota')), txt(cel(r, 'descripcion'))].filter(Boolean).join(' · ').slice(0, 120);
+    const clave = [f.ts, norm(cel(r, 'cuenta')), monto, t, norm(cat), norm(descripcion)].join('|');
+    enArchivo.set(clave, (enArchivo.get(clave) || 0) + 1);
+    const importKey = `${clave}#${enArchivo.get(clave)}`;
+    if (ya.has(importKey)) { repetidos++; continue; }
+    const cid = cuentaId(cel(r, 'cuenta'));
+
+    if (t === 'ajuste') {
+      // Solo para cuentas que crea esta importación; si ya existía, su saldo inicial no se toca.
+      if (nuevas.has(cid)) nuevas.get(cid).saldoInicial = Math.round((nuevas.get(cid).saldoInicial + montoNum) * 100) / 100;
+      else repetidos++;
+      continue;
+    }
+    const creado = f.ts + Math.round((999 * (nuevoPrimero ? n - i : i)) / n);
+    const base = { monto, fecha: f.fecha, cuentaId: cid, descripcion, creado, editado: ahora, importKey };
+    if (t === 'transf') {
+      if (!cat) { omitidos++; continue; }
+      const dest = cuentaId(cat);
+      if (dest === cid) { omitidos++; continue; }
+      movs.push({ id: uuid(), data: { tipo: 'transferencia', ...base, cuentaDestinoId: dest, proyectoId: null, etiqueta: null } });
+    } else {
+      const etiqueta = (sub ? `${cat} · ${sub}` : cat).slice(0, 40) || 'Otros';
+      if (!etq[t].some((x) => norm(x) === norm(etiqueta))) { etq[t].push(etiqueta); etqCambio = true; }
+      movs.push({ id: uuid(), data: { tipo: t, ...base, etiqueta: etq[t].find((x) => norm(x) === norm(etiqueta)), proyectoId: null } });
+    }
+  }
+
+  // Escrituras sin esperar: aparecen al instante y Firestore sincroniza después.
+  if (nuevas.size) S.backend.bulk('cuentas', [...nuevas].map(([id, data]) => ({ id, data })));
+  if (movs.length) S.backend.bulk('movimientos', movs);
+  if (etqCambio) S.backend.saveAjustes({ etiquetas: etq });
+  return { n: movs.length, cuentas: nuevas.size, omitidos, repetidos };
+}
+
+async function importarArchivo(file) {
+  toast('Leyendo archivo…');
+  try {
+    let rows;
+    if (/\.csv$/i.test(file.name) || file.type === 'text/csv') rows = parseCsv(await file.text());
+    else { const { leerXlsx } = await import('./xlsx-lector.js'); rows = leerXlsx(await file.arrayBuffer()); }
+    const r = importarFilas(rows);
+    toast(`${r.n} movimientos importados`
+      + (r.cuentas ? ` · ${r.cuentas} cuenta${r.cuentas === 1 ? '' : 's'} nueva${r.cuentas === 1 ? '' : 's'}` : '')
+      + (r.repetidos ? ` · ${r.repetidos} ya estaban` : '')
+      + (r.omitidos ? ` · ${r.omitidos} filas sin datos válidos` : ''));
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo importar: ' + (e.message || e));
+  }
 }
 
 /* ---------- Varios ---------- */

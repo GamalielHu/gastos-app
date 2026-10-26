@@ -36,6 +36,8 @@ export function createLocalBackend() {
     set(col, id, data) { db[col][id] = data; emit(col); },
     update(col, id, data) { db[col][id] = { ...db[col][id], ...data }; emit(col); },
     remove(col, id) { delete db[col][id]; emit(col); },
+    // Muchas escrituras de una vez (importación): se guarda y se avisa una sola vez.
+    bulk(col, items) { for (const { id, data } of items) db[col][id] = data; emit(col); },
     saveAjustes(data) { db.ajustes = { ...(db.ajustes || {}), ...data }; emit('ajustes'); },
   };
 }
