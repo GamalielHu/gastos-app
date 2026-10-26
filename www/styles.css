@@ -315,6 +315,8 @@ input:focus, select:focus { outline: none; border-color: var(--ink); }
 .row-2 > * { min-width: 0; }
 .sheet-actions { display: flex; justify-content: space-between; gap: 10px; padding-top: 4px; }
 .sheet-actions .btn { flex: 1; }
+.check { display: flex; align-items: flex-start; gap: 10px; margin: 6px 0 14px; font-size: .9rem; cursor: pointer; }
+.check input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
 .form-msg { margin: 0; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--gasto) 12%, transparent); color: var(--gasto); font-weight: 600; font-size: .9rem; }
 .form-msg.ok { background: color-mix(in srgb, var(--ingreso) 12%, transparent); color: var(--ingreso); }
 
