@@ -990,11 +990,38 @@ function analizarFilas(rows) {
   return { regs, nombres, omitidos, repetidos };
 }
 
-// Cuenta propuesta para un nombre del archivo: el alias guardado o una cuenta con el mismo nombre.
+// Cuenta propuesta para un nombre del archivo: el alias guardado, una cuenta con el mismo nombre
+// o, para "Cuenta 1"/"Cuentas bancarias" de la app del iPad, la primera cuenta de banco.
 function cuentaSugerida(k) {
   const a = (S.ajustes?.aliasCuentas || {})[k];
   if (a && cuentaById(a)) return a;
-  return S.cuentas.find((c) => norm(c.nombre) === k)?.id || '';
+  const igual = S.cuentas.find((c) => norm(c.nombre) === k);
+  if (igual) return igual.id;
+  if (/^cuenta 1$|^cuentas? bancarias?$/.test(k)) return cuentasOrden().find((c) => c.tipo === 'banco')?.id || '';
+  return '';
+}
+
+// Obra propuesta para una categoría del archivo: el alias guardado o una obra en curso
+// que comparta una palabra larga con la categoría ("Mant. Reintegración social…" -> obra "Reintegración…").
+const obrasActivas = () => proyOrden().filter((p) => p.estado !== 'cerrado');
+function obraSugerida(k) {
+  const a = (S.ajustes?.aliasProyectos || {})[k];
+  if (a && proyById(a)) return a;
+  const palabras = (t) => norm(t).split(/[^a-z0-9ñ]+/).filter((w) => w.length >= 5);
+  const pk = new Set(palabras(k));
+  return obrasActivas().find((p) => palabras(p.nombre).some((w) => pk.has(w)))?.id || '';
+}
+
+// Etiqueta de obra para una categoría del archivo (los gastos de obra usan sus propias etiquetas).
+function etiquetaObra(cat) {
+  const n = norm(cat);
+  if (n.includes('material')) return 'Materiales';
+  if (n.includes('trabajador') || n.includes('jornal') || n.includes('sueldo')) return 'Pago a trabajadores';
+  if (n.includes('transporte') || n.includes('flete') || n.includes('gasolina')) return 'Transporte';
+  if (n.includes('comida') || n.includes('almuerzo')) return 'Comida';
+  if (n.includes('herramient')) return 'Herramientas';
+  if (n.includes('maquinaria')) return 'Alquiler de maquinaria';
+  return 'Otros';
 }
 
 // Hoja para elegir a qué cuenta va cada cuenta del archivo antes de importar.
@@ -1004,10 +1031,18 @@ function importarSheet(an) {
   const fechas = an.regs.map((r) => r.fecha).sort();
   const opts = (sel) => '<option value="">Crear cuenta nueva</option>'
     + cuentasOrden().map((c) => `<option value="${c.id}" ${sel === c.id ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
+  const obras = obrasActivas();
+  const cats = new Map(); // categoría normalizada -> { nombre, n }
+  for (const r of an.regs) if (r.etiqueta) { const k = norm(r.etiqueta); const e = cats.get(k) || { nombre: r.etiqueta, n: 0 }; e.n++; cats.set(k, e); }
+  const categorias = obras.length ? [...cats].sort((a, b) => !!obraSugerida(b[0]) - !!obraSugerida(a[0]) || b[1].n - a[1].n) : [];
+  const optsObra = (sel) => '<option value="">General (sin obra)</option>'
+    + obras.map((p) => `<option value="${p.id}" ${sel === p.id ? 'selected' : ''}>Obra: ${esc(p.nombre)}</option>`).join('');
   const body = `
   <form id="imp-form" novalidate>
     <p class="muted small">${an.regs.length} movimientos del ${fechaCorta(fechas[0])} al ${fechaCorta(fechas[fechas.length - 1])}${an.repetidos ? ` · ${an.repetidos} ya estaban` : ''}. Elige a qué cuenta va cada una del archivo.</p>
     ${nombres.map(([k, v], i) => `<label class="field"><span>${esc(v.nombre)} <small class="muted">· ${v.n} mov.</small></span><select data-imp="${i}">${opts(cuentaSugerida(k))}</select></label>`).join('')}
+    ${categorias.length ? `<p class="muted small">¿Alguna categoría es de una obra? Sus movimientos se suman a esa obra.</p>
+    ${categorias.map(([k, v], i) => `<label class="field"><span>${esc(v.nombre)} <small class="muted">· ${v.n} mov.</small></span><select data-obra="${i}">${optsObra(obraSugerida(k))}</select></label>`).join('')}` : ''}
     <label class="check"><input type="checkbox" id="imp-saldo" checked><span>Mantener el saldo de hoy en las cuentas que ya tengo (se ajusta su saldo inicial)</span></label>
     <div class="sheet-actions"><button type="button" class="btn" data-close>Cancelar</button><button type="submit" class="btn primary">Importar</button></div>
   </form>`;
@@ -1015,17 +1050,19 @@ function importarSheet(an) {
     sh.querySelector('#imp-form').onsubmit = (ev) => {
       ev.preventDefault();
       const mapa = new Map(nombres.map(([k], i) => [k, sh.querySelector(`[data-imp="${i}"]`).value]));
-      const r = aplicarImport(an, mapa, sh.querySelector('#imp-saldo').checked);
+      const mapaObra = new Map(categorias.map(([k], i) => [k, sh.querySelector(`[data-obra="${i}"]`).value]));
+      const r = aplicarImport(an, mapa, mapaObra, sh.querySelector('#imp-saldo').checked);
       closeSheet();
       toast(`${r.n} movimientos importados`
         + (r.cuentas ? ` · ${r.cuentas} cuenta${r.cuentas === 1 ? '' : 's'} nueva${r.cuentas === 1 ? '' : 's'}` : '')
+        + (r.deObra ? ` · ${r.deObra} de obra` : '')
         + (r.ajustadas ? ` · saldo de hoy sin cambios en ${r.ajustadas} cuenta${r.ajustadas === 1 ? '' : 's'}` : '')
         + (r.omitidos ? ` · ${r.omitidos} filas sin datos válidos` : ''));
     };
   });
 }
 
-function aplicarImport(an, mapa, mantenerSaldo) {
+function aplicarImport(an, mapa, mapaObra, mantenerSaldo) {
   const ahora = Date.now();
   const nuevas = new Map(); // nombre normalizado -> { id, data }
   const idDe = (k) => {
@@ -1037,7 +1074,7 @@ function aplicarImport(an, mapa, mantenerSaldo) {
     return nuevas.get(k).id;
   };
   const etq = structuredClone(ajustes().etiquetas);
-  let etqCambio = false, omitidos = an.omitidos;
+  let etqCambio = false, omitidos = an.omitidos, deObra = 0;
   const delta = new Map(); // cuentaId -> efecto neto de lo importado (ingresos − gastos ± transferencias)
   const suma = (id, v) => delta.set(id, r2((delta.get(id) || 0) + v));
   const movs = [];
@@ -1057,8 +1094,12 @@ function aplicarImport(an, mapa, mantenerSaldo) {
       movs.push({ id: uuid(), data: { tipo: 'transferencia', ...base, cuentaDestinoId: dest, proyectoId: null, etiqueta: null } });
       suma(cid, -r.monto); suma(dest, r.monto);
     } else {
-      if (!etq[r.t].some((x) => norm(x) === norm(r.etiqueta))) { etq[r.t].push(r.etiqueta); etqCambio = true; }
-      movs.push({ id: uuid(), data: { tipo: r.t, ...base, etiqueta: etq[r.t].find((x) => norm(x) === norm(r.etiqueta)), proyectoId: null } });
+      const proyectoId = mapaObra.get(norm(r.etiqueta)) || null;
+      const lista = proyectoId && r.t === 'gasto' ? 'proyecto' : r.t; // gastos de obra: etiquetas de obra
+      const etiqueta = lista === 'proyecto' ? etiquetaObra(r.etiqueta) : r.etiqueta;
+      if (!etq[lista].some((x) => norm(x) === norm(etiqueta))) { etq[lista].push(etiqueta); etqCambio = true; }
+      movs.push({ id: uuid(), data: { tipo: r.t, ...base, etiqueta: etq[lista].find((x) => norm(x) === norm(etiqueta)), proyectoId } });
+      if (proyectoId) deObra++;
       suma(cid, r.t === 'ingreso' ? r.monto : -r.monto);
     }
   }
@@ -1083,8 +1124,13 @@ function aplicarImport(an, mapa, mantenerSaldo) {
   const alias = { ...(S.ajustes?.aliasCuentas || {}) };
   let aliasCambio = false;
   for (const [k, id] of mapa) if (id && alias[k] !== id) { alias[k] = id; aliasCambio = true; }
-  if (etqCambio || aliasCambio) S.backend.saveAjustes({ ...(etqCambio ? { etiquetas: etq } : {}), ...(aliasCambio ? { aliasCuentas: alias } : {}) });
-  return { n: movs.length, cuentas: nuevas.size, ajustadas, omitidos };
+  const aliasObra = { ...(S.ajustes?.aliasProyectos || {}) };
+  let obraCambio = false;
+  for (const [k, id] of mapaObra) if (id && aliasObra[k] !== id) { aliasObra[k] = id; obraCambio = true; }
+  if (etqCambio || aliasCambio || obraCambio) {
+    S.backend.saveAjustes({ ...(etqCambio ? { etiquetas: etq } : {}), ...(aliasCambio ? { aliasCuentas: alias } : {}), ...(obraCambio ? { aliasProyectos: aliasObra } : {}) });
+  }
+  return { n: movs.length, cuentas: nuevas.size, ajustadas, omitidos, deObra };
 }
 
 async function importarArchivo(file) {
