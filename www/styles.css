@@ -214,7 +214,7 @@ h3 { font-size: .95rem; }
 .mr-amt { font-weight: 800; white-space: nowrap; }
 .mr-amt.transferencia { color: var(--transfer); }
 .mr-amt-col { display: grid; justify-items: end; gap: 1px; }
-.saldo-posterior { font-size: .75rem; color: var(--muted); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+.saldo-posterior { font-size: .75rem; opacity: .7; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 .empty { padding: 20px 16px; color: var(--muted); text-align: center; }
 .list-sum { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: .88rem; padding: 0 2px; }
 .list-sum b { margin-left: 8px; }
