@@ -297,7 +297,7 @@ function movList(list, opts = {}) {
   for (const [f, ms] of groups) {
     const g = sum(ms.filter((m) => m.tipo === 'gasto'));
     const i = sum(ms.filter((m) => m.tipo === 'ingreso'));
-    html += `<section class="day"><header><span>${diaLargo(f)}</span><span class="day-tot">${i ? `<b class="ingreso">+${num(i)}</b>` : ''}${g ? `<b class="gasto">−${num(g)}</b>` : ''}</span></header>
+    html += `<section class="day"><button type="button" class="day-head" data-fecha="${f}" aria-label="Nuevo movimiento el ${fechaCorta(f)}"><span class="day-lbl">${diaLargo(f)}<i class="day-add" aria-hidden="true">${I.mas}</i></span><span class="day-tot">${i ? `<b class="ingreso">+${num(i)}</b>` : ''}${g ? `<b class="gasto">−${num(g)}</b>` : ''}</span></button>
       <div class="rows">${ms.map((m) => movRow(m, opts)).join('')}</div></section>`;
   }
   return html;
@@ -589,6 +589,8 @@ function bindView(v) {
   v.querySelectorAll('[data-permodo]').forEach((b) => b.onclick = () => { S.periodo.modo = b.dataset.permodo; renderView(); });
   v.querySelectorAll('[data-itipo]').forEach((b) => b.onclick = () => { S.inicioTipo = b.dataset.itipo; renderView(); });
   v.querySelectorAll('[data-mov]').forEach((b) => b.onclick = () => { const m = S.movs.find((x) => x.id === b.dataset.mov); if (m) movSheet(m); });
+  // Tocar la fecha de un día abre "Nuevo movimiento" con esa fecha.
+  v.querySelectorAll('[data-fecha]').forEach((b) => b.onclick = () => movSheet(null, { ...presetDesdeRuta(), fecha: b.dataset.fecha }));
   v.querySelectorAll('[data-cuenta]').forEach((b) => b.onclick = () => cuentaSheet(cuentaById(b.dataset.cuenta)));
   v.querySelector('#add-cuenta')?.addEventListener('click', () => cuentaSheet(null));
   v.querySelectorAll('[data-grupo]').forEach((li) => {
@@ -694,7 +696,7 @@ function armConfirm(btn, label, action) {
 function movSheet(mov, preset = {}) {
   if (!S.cuentas.length) { toast('Primero crea una cuenta'); return cuentaSheet(null); }  const editing = !!mov;
   const m = mov ? { ...mov } : {
-    tipo: preset.tipo || 'gasto', monto: '', fecha: today(),
+    tipo: preset.tipo || 'gasto', monto: '', fecha: preset.fecha || today(),
     cuentaId: localGet('ultimaCuenta') && cuentaById(localGet('ultimaCuenta')) ? localGet('ultimaCuenta') : cuentasOrden()[0].id,
     proyectoId: preset.proyectoId || null, etiqueta: '', descripcion: '',
   };

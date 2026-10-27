@@ -194,9 +194,15 @@ h3 { font-size: .95rem; }
 .acct-line small { display: block; color: var(--muted); font-size: .78rem; }
 
 /* Lista de movimientos */
-.day > header { display: flex; justify-content: space-between; gap: 10px; padding: 12px 16px 6px; font-size: .78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-.card .day > header { padding-left: 0; padding-right: 0; }
-.card.flush .day > header { padding-left: 16px; padding-right: 16px; }
+.day-head { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px 6px; border: 0; background: none; font-size: .78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; text-align: left; cursor: pointer; border-radius: 8px; }
+.card .day-head { padding-left: 0; padding-right: 0; }
+.card.flush .day-head { padding-left: 16px; padding-right: 16px; }
+.day-lbl { display: inline-flex; align-items: center; gap: 6px; }
+.day-add { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 6px; background: var(--accent-soft); color: var(--ink); opacity: .55; transition: opacity .15s; }
+.day-add svg { width: 12px; height: 12px; }
+.day-head:hover .day-add, .day-head:focus-visible .day-add { opacity: 1; }
+.day-head:hover { color: var(--ink); }
+.day-head:active { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); }
 .day-tot { display: flex; gap: 10px; }
 .mov-row { width: 100%; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border: 0; border-top: 1px solid var(--line); background: none; text-align: left; cursor: pointer; }
 .rows .mov-row:first-child { border-top: 0; }
