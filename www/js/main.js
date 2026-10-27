@@ -1,5 +1,5 @@
 // Cuentas Claras — registro de gastos e ingresos por cuenta y por proyecto.
-import { esc, money, num, signed, parseMonto, today, isoDate, mesNombre, diaLargo, fechaCorta, norm, setMoneda, getMoneda, uuid, saldosPosteriores, parseFechaHora, parseCsv } from './util.js';
+import { PALETA, esc, money, num, signed, parseMonto, today, isoDate, mesNombre, diaLargo, fechaCorta, norm, setMoneda, getMoneda, uuid, saldosPosteriores, parseFechaHora, parseCsv } from './util.js';
 import { pieChart } from './pie.js';
 import { I, iconCuenta } from './icons.js';
 import { createLocalBackend } from './local-backend.js';
@@ -283,10 +283,17 @@ function movRow(m, { showProy = true } = {}) {
   const chip = showProy && p ? `<span class="chip obra">${esc(p.nombre)}</span>` : '';
   const st = saldoTras(m);
   return `<button class="mov-row" data-mov="${m.id}">
-    <span class="mr-ic ${m.tipo}">${m.tipo === 'transferencia' ? I.transfer : esc([...(m.etiqueta || '?')][0].toUpperCase())}</span>
+    <span class="mr-ic ${m.tipo}" ${m.tipo === 'transferencia' ? '' : `style="--c:${colorEtiqueta(m.etiqueta)}"`}>${m.tipo === 'transferencia' ? I.transfer : esc([...(m.etiqueta || '?')][0].toUpperCase())}</span>
     <span class="mr-main"><span class="mr-title">${titulo}${chip}</span>${desc}<span class="mr-sub">${sub.join(' · ')}</span></span>
     <span class="mr-amt-col"><span class="mr-amt ${m.tipo}">${signed(m.monto, m.tipo)}</span>${st != null ? `<small class="saldo-posterior">Saldo ${money(st)}</small>` : ''}</span>
   </button>`;
+}
+
+// Color estable por etiqueta (el mismo en la lista y en cualquier dispositivo).
+function colorEtiqueta(e) {
+  let h = 0;
+  for (const ch of norm(e || '?')) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return PALETA[h % PALETA.length];
 }
 
 function movList(list, opts = {}) {
@@ -361,10 +368,17 @@ function vInicio() {
   return `
   <div class="page">
     ${periodoCtl()}
-    <section class="summary">
-      <div class="sum-cell"><small>Ingresos</small><strong class="ingreso">${money(ti)}</strong></div>
-      <div class="sum-cell"><small>Gastos</small><strong class="gasto">${money(tg)}</strong></div>
-      <div class="sum-cell"><small>Balance</small><strong class="${ti - tg < 0 ? 'gasto' : ''}">${money(ti - tg)}</strong></div>
+    <section class="hero">
+      <div class="hazard" aria-hidden="true"></div>
+      <div class="hero-body">
+        <small>Saldo total en tus cuentas</small>
+        <strong class="hero-total ${total < 0 ? 'neg' : ''}">${money(total)}</strong>
+        <div class="hero-row">
+          <span><small>Ingresos</small><b class="ingreso">+${num(ti)}</b></span>
+          <span><small>Gastos</small><b class="gasto">−${num(tg)}</b></span>
+          <span><small>Balance</small><b class="${ti - tg < 0 ? 'gasto' : 'ingreso'}">${ti - tg < 0 ? '−' : '+'}${num(Math.abs(ti - tg))}</b></span>
+        </div>
+      </div>
     </section>
 
     <div class="grid-2">
