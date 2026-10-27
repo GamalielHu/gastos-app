@@ -21,7 +21,7 @@ export function pieChart(items, { centerLabel = 'Total', emptyText = 'Sin datos 
     return s;
   }).join('');
 
-  const legend = data.map((d) => {
+  const fila = (d) => {
     const pct = (d.value / total) * 100;
     const attr = onClickAttr && d.key != null ? `${onClickAttr}="${esc(d.key)}" role="button" tabindex="0"` : '';
     return `<li ${attr}>
@@ -30,7 +30,12 @@ export function pieChart(items, { centerLabel = 'Total', emptyText = 'Sin datos 
       <span class="lg-pct">${pct >= 10 ? pct.toFixed(0) : pct.toFixed(1)}%</span>
       <span class="lg-val">${money(d.value)}</span>
     </li>`;
-  }).join('');
+  };
+  // Las porciones chicas van plegadas para que la leyenda no ocupe toda la pantalla.
+  const VISIBLES = 6;
+  const legend = data.length > VISIBLES + 2
+    ? data.slice(0, VISIBLES).map(fila).join('') + `<li class="lg-more"><details><summary>Ver ${data.length - VISIBLES} más</summary><ul class="legend">${data.slice(VISIBLES).map(fila).join('')}</ul></details></li>`
+    : data.map(fila).join('');
 
   return `<div class="pie">
     <div class="pie-figure">
