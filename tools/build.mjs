@@ -1,7 +1,7 @@
 // Copia www/ a dist/ y empaqueta la conexión con Firebase.
 // dist/ es lo que se publica en la web (iPad) y lo que va dentro del APK (Android).
 import { build } from 'esbuild';
-import { cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 
 rmSync('dist', { recursive: true, force: true });
 cpSync('www', 'dist', { recursive: true });
@@ -18,6 +18,13 @@ await empaquetar('www/js/firebase-backend.src.js', 'dist/js/firebase-backend.js'
 await empaquetar('www/js/xlsx-lector.src.js', 'dist/js/xlsx-lector.js');
 // Guardar y compartir archivos en Android (copia de seguridad).
 await empaquetar('www/js/nativo.src.js', 'dist/js/nativo.js');
+
+// OCR de comprobantes sin internet: tesseract.js + núcleo wasm + idioma español.
+const T = 'dist/vendor/tesseract';
+mkdirSync(`${T}/lang`, { recursive: true });
+for (const f of ['tesseract.esm.min.js', 'worker.min.js']) cpSync(`node_modules/tesseract.js/dist/${f}`, `${T}/${f}`);
+for (const f of ['tesseract-core-lstm.wasm.js', 'tesseract-core-simd-lstm.wasm.js', 'tesseract-core-relaxedsimd-lstm.wasm.js']) cpSync(`node_modules/tesseract.js-core/${f}`, `${T}/${f}`);
+cpSync('node_modules/@tesseract.js-data/spa/4.0.0_best_int/spa.traineddata.gz', `${T}/lang/spa.traineddata.gz`);
 
 const sw = readFileSync('dist/sw.js', 'utf8').replace('__BUILD__', Date.now().toString(36));
 writeFileSync('dist/sw.js', sw);

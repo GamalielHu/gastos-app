@@ -71,6 +71,7 @@ jobs:
           # Firma siempre con tools/debug.keystore (sin esto Gradle crea una clave nueva en cada compilación)
           sed -i "0,/^android {/s//android {\n    signingConfigs { debug { storeFile file('..\/..\/tools\/debug.keystore'); storePassword 'android'; keyAlias 'androiddebugkey'; keyPassword 'android' } }/" android/app/build.gradle
           grep -n "signingConfigs" android/app/build.gradle
+          node tools/android-compartir.mjs
           npx cap sync android
       - name: Compilar APK
         run: |

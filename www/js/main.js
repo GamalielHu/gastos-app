@@ -3,6 +3,7 @@ import { PALETA, esc, money, num, signed, parseMonto, today, isoDate, mesNombre,
 import { pieChart } from './pie.js';
 import { I, iconCuenta } from './icons.js';
 import { createLocalBackend } from './local-backend.js';
+import { analizarComprobante, hashesBeneficiario, buscarGasto, recordarGasto } from './ocr-comprobantes.js';
 
 /* ---------- Valores por defecto ---------- */
 const ETIQUETAS_DEF = {
@@ -102,11 +103,15 @@ async function boot() {
   inp?.addEventListener('change', () => { const f = inp.files[0]; inp.value = ''; if (f) importarArchivo(f); });
   const res = document.getElementById('input-restaurar');
   res?.addEventListener('change', () => { const f = res.files[0]; res.value = ''; if (f) restaurarCopia(f); });
+  const comp = document.getElementById('input-comprobante');
+  comp?.addEventListener('change', () => { const f = comp.files[0]; comp.value = ''; if (f) leerComprobante(f); });
   S.backend.onAuth((u) => {
     S.user = u;
     unsubs.forEach((f) => f()); unsubs = [];
-    if (u) { subscribe(); renderShell(); } else { renderLogin(); }
+    if (u) { subscribe(); renderShell(); if (S.comprobantePendiente) { const b = S.comprobantePendiente; S.comprobantePendiente = null; leerComprobante(b); } } else { renderLogin(); }
   });
+  revisarCompartido();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(revisarCompartido, 300); });
   if ('serviceWorker' in navigator && location.protocol === 'https:' && location.hostname !== 'localhost') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
@@ -714,9 +719,19 @@ function movSheet(mov, preset = {}) {
     cuentaId: localGet('ultimaCuenta') && cuentaById(localGet('ultimaCuenta')) ? localGet('ultimaCuenta') : cuentasOrden()[0].id,
     proyectoId: preset.proyectoId || null, etiqueta: '', descripcion: '',
   };
+  if (!mov && preset.comprobante) {
+    // Datos leídos del comprobante (y lo que se memorizó para ese beneficiario)
+    if (preset.monto > 0) m.monto = preset.monto;
+    if (preset.etiqueta) m.etiqueta = preset.etiqueta;
+    if (preset.cuentaId && cuentaById(preset.cuentaId)) m.cuentaId = preset.cuentaId;
+    if (preset.proyectoId && !proyById(preset.proyectoId)) m.proyectoId = null;
+  }
+  const cp = !mov && preset.comprobante;
   const proys = proyOrden().filter((p) => p.estado !== 'cerrado' || p.id === m.proyectoId);
   const body = `
   <form id="mov-form" novalidate>
+    ${cp ? `<p class="ocr-aviso ${m.etiqueta ? 'ok' : ''}">${m.etiqueta ? `Comprobante leído. Beneficiario conocido: <b>${esc(m.etiqueta)}</b>.` : 'Comprobante leído. Elige <b>qué gasto es</b>; la próxima vez se completará solo.'}${preset.monto > 0 ? '' : ' No se encontró el monto.'}</p>` : ''}
+    ${!editing && !cp ? `<button type="button" class="btn small ocr-btn" id="mv-ocr">${I.recibo} Leer comprobante</button>` : ''}
     <div class="seg tipo" role="radiogroup" aria-label="Tipo de movimiento">
       ${[['gasto', 'Gasto'], ['ingreso', 'Ingreso'], ['transferencia', 'Transferencia']].map(([k, t]) => `<label class="${k}"><input type="radio" name="tipo" value="${k}" ${m.tipo === k ? 'checked' : ''}><span>${t}</span></label>`).join('')}
     </div>
@@ -804,7 +819,9 @@ function movSheet(mov, preset = {}) {
     sh.querySelectorAll('input[name=tipo]').forEach((r) => r.onchange = dyn);
     $('#mv-proy').onchange = dyn;
     dyn();
-    if (!editing) setTimeout(() => $('#mv-monto').focus(), 60);
+    if (cp && !etiqueta) setTimeout(() => { $('#mv-etq-wrap').scrollIntoView({ block: 'center' }); $('#mv-etqs .chip')?.focus(); }, 80);
+    else if (!editing && !(cp && m.monto > 0)) setTimeout(() => $('#mv-monto').focus(), 60);
+    $('#mv-ocr')?.addEventListener('click', () => document.getElementById('input-comprobante').click());
 
     const msg = (t) => { const el = $('#mv-msg'); el.textContent = t; el.hidden = !t; };
     function collect() {
@@ -835,6 +852,8 @@ function movSheet(mov, preset = {}) {
       const d = collect(); if (!d) return;
       if (editing) S.backend.set('movimientos', mov.id, d); else S.backend.add('movimientos', d);
       localSet('ultimaCuenta', d.cuentaId);
+      // Solo el hash del beneficiario queda en este dispositivo; el nombre no se guarda en el movimiento.
+      if (cp && d.tipo === 'gasto') { recordarGasto(preset.benef, d); preset.benef = null; }
       toast(editing ? 'Cambios guardados' : `${d.tipo === 'gasto' ? 'Gasto' : d.tipo === 'ingreso' ? 'Ingreso' : 'Transferencia'} de ${money(d.monto)} guardado`);
       if (otro) {
         $('#mv-monto').value = ''; $('#mv-desc').value = ''; $('#mv-cant').value = ''; msg(''); $('#mv-monto').focus();
@@ -1224,6 +1243,54 @@ async function restaurarCopia(file) {
 
 /* ---------- Varios ---------- */
 let toastT;
+/* ---------- Comprobantes bancarios (imagen → OCR → movimiento) ---------- */
+// Android: "Compartir → Cuentas Claras" desde la galería o la app del banco.
+async function revisarCompartido() {
+  if (!window.Capacitor?.isNativePlatform?.()) return;
+  try {
+    const { imagenCompartida } = await import('./nativo.js');
+    const img = await imagenCompartida();
+    if (!img) return;
+    if (S.user) leerComprobante(img); else { S.comprobantePendiente = img; toast('Entra a tu cuenta para registrar el comprobante'); }
+  } catch (e) { console.error('Compartir', e); }
+}
+
+let ocrWorker = null;
+async function ocrTexto(img, avance) {
+  if (!ocrWorker) {
+    const base = new URL('./vendor/tesseract/', location.href).href;
+    const { default: Tesseract } = await import('../vendor/tesseract/tesseract.esm.min.js');
+    ocrWorker = Tesseract.createWorker('spa', 1, {
+      workerPath: base + 'worker.min.js', corePath: base, langPath: base + 'lang', gzip: true,
+      logger: (l) => { if (l.status === 'recognizing text') avance(l.progress); },
+    }).catch((e) => { ocrWorker = null; throw e; });
+  }
+  const w = await ocrWorker;
+  const { data } = await w.recognize(img);
+  return data.text || '';
+}
+
+async function leerComprobante(img) {
+  if (!S.user) { S.comprobantePendiente = img; return; }
+  for (let i = 0; i < 50 && !S.loaded?.cuentas; i++) await new Promise((r) => setTimeout(r, 200));
+  openSheet('Leyendo comprobante', `<div class="ocr-leyendo"><p>Buscando monto, fecha y beneficiario…</p><progress id="ocr-prog" max="1"></progress><p class="muted small">Se procesa en el celular, sin internet.</p></div>`);
+  const prog = () => document.getElementById('ocr-prog');
+  let texto = '';
+  try { texto = await ocrTexto(img, (p) => { if (prog()) prog().value = p; }); }
+  catch (e) { console.error('OCR', e); }
+  if (!sheetOpen) return; // el usuario cerró la hoja
+  if (!texto.trim()) toast('No se pudo leer el comprobante');
+  const r = analizarComprobante(texto);
+  const benef = await hashesBeneficiario(r.beneficiario);
+  r.beneficiario = null; texto = ''; // el nombre se descarta aquí
+  const prev = buscarGasto(benef) || {};
+  movSheet(null, {
+    comprobante: true, tipo: 'gasto', benef,
+    fecha: r.fecha || today(), monto: r.monto,
+    etiqueta: prev.etiqueta || '', cuentaId: prev.cuentaId || null, proyectoId: prev.proyectoId || null,
+  });
+}
+
 function toast(t) {
   const el = document.getElementById('toast');
   el.textContent = t; el.hidden = false; el.classList.add('show');

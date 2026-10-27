@@ -393,3 +393,11 @@ input:focus, select:focus { outline: none; border-color: var(--ink); }
   .hero-row b { font-size: .92rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Comprobantes bancarios (OCR) */
+.ocr-btn { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 12px; }
+.ocr-btn svg { width: 18px; height: 18px; }
+.ocr-aviso { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: .9rem; }
+.ocr-aviso.ok { background: color-mix(in srgb, var(--ingreso) 14%, transparent); }
+.ocr-leyendo { text-align: center; padding: 8px 0 16px; }
+.ocr-leyendo progress { width: 100%; height: 8px; accent-color: var(--accent); }
