@@ -3,7 +3,7 @@ import { PALETA, esc, money, num, signed, parseMonto, today, isoDate, mesNombre,
 import { pieChart } from './pie.js';
 import { I, iconCuenta } from './icons.js';
 import { createLocalBackend } from './local-backend.js';
-import { analizarComprobante, clavesBeneficiario, buscarGasto, recordarGasto } from './ocr-comprobantes.js';
+import { analizarComprobante, clavesBeneficiario, clavesV111, buscarGasto, recordarGasto } from './ocr-comprobantes.js';
 
 /* ---------- Valores por defecto ---------- */
 const ETIQUETAS_DEF = {
@@ -1281,7 +1281,8 @@ async function leerComprobante(img) {
   if (!sheetOpen) return; // el usuario cerró la hoja
   if (!texto.trim()) toast('No se pudo leer el comprobante');
   const r = analizarComprobante(texto);
-  const benef = clavesBeneficiario(r.beneficiario);
+  // Claves actuales + las de la v1.11, para reconocer también lo aprendido antes
+  const benef = [...clavesBeneficiario(r.beneficiario), ...await clavesV111(r.beneficiario)];
   r.beneficiario = null; texto = '';
   const prev = buscarGasto(benef) || {};
   movSheet(null, {
