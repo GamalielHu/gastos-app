@@ -145,17 +145,63 @@ export function clavesBeneficiario({ nombre, cuenta } = {}) {
   return out;
 }
 
-const leer = () => { try { return JSON.parse(localStorage.getItem(CLAVE)) || {}; } catch { return {}; } };
+/* Persistencia: nunca se borra ni se vacía la memoria; solo se añade o actualiza (upsert). */
+const CLAVE_V111 = 'cc_benef'; // v1.11: hash SHA-256 → { etiqueta, cuentaId, proyectoId }
+
+function leerClave(k) {
+  let raw = null;
+  try { raw = localStorage.getItem(k); } catch { return {}; }
+  if (!raw) return {};
+  try {
+    const o = JSON.parse(raw);
+    if (o && typeof o === 'object' && !Array.isArray(o)) return o;
+  } catch {}
+  // Ilegible: se conserva una copia antes de que un guardado escriba encima.
+  try { if (!localStorage.getItem(k + '_respaldo')) localStorage.setItem(k + '_respaldo', raw); } catch {}
+  return {};
+}
+
+const aEsquemaActual = (v) => v && typeof v === 'object'
+  ? { ...v, etiquetaId: v.etiquetaId ?? v.etiqueta ?? null, proyectoId: v.proyectoId ?? null, cuentaId: v.cuentaId ?? null }
+  : null;
+
+// Migración transparente: fusiona la memoria de la v1.11 con la actual (la actual tiene prioridad).
+export function leerMemoria() {
+  const viejo = leerClave(CLAVE_V111), actual = leerClave(CLAVE), mem = {};
+  for (const [k, v] of Object.entries(viejo)) { const e = aEsquemaActual(v); if (e?.etiquetaId) mem[k] = e; }
+  for (const [k, v] of Object.entries(actual)) { const e = aEsquemaActual(v); if (e) mem[k] = e; }
+  return mem;
+}
+
+/* Claves de la v1.11 (hash del nombre en minúsculas o de la cuenta) para reconocer lo aprendido entonces. */
+const claveNombreV111 = (n) => sinTildes(n).toLowerCase().replace(/[^a-zñ ]/g, ' ').replace(/\s+/g, ' ').trim();
+async function sha256(s) {
+  if (globalThis.crypto?.subtle) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  let h = 0x811c9dc5; // FNV-1a si no hay crypto.subtle
+  for (const ch of s) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+  return 'f' + h.toString(16);
+}
+export async function clavesV111({ nombre, cuenta } = {}) {
+  const out = [];
+  const n = nombre && claveNombreV111(nombre);
+  if (n && n.replace(/ /g, '').length >= 3) out.push(await sha256('cc|n|' + n));
+  if (cuenta) out.push(await sha256('cc|c|' + cuenta));
+  return out;
+}
 
 export function buscarGasto(claves) {
-  const mem = leer();
-  for (const k of claves || []) if (mem[k]) return mem[k];
+  const mem = leerMemoria();
+  for (const k of claves || []) if (mem[k]?.etiquetaId) return mem[k];
   return null;
 }
 
+// Upsert: relee lo guardado y solo cambia las claves de este beneficiario.
 export function recordarGasto(claves, { etiqueta, cuentaId, proyectoId }) {
   if (!claves?.length || !etiqueta) return;
-  const mem = leer();
-  for (const k of claves) mem[k] = { etiquetaId: etiqueta, proyectoId: proyectoId || null, cuentaId: cuentaId || null };
-  try { localStorage.setItem(CLAVE, JSON.stringify(mem)); localStorage.removeItem('cc_benef'); } catch {}
+  const mem = leerMemoria();
+  for (const k of claves) mem[k] = { ...(mem[k] || {}), etiquetaId: etiqueta, proyectoId: proyectoId || null, cuentaId: cuentaId || null };
+  try { localStorage.setItem(CLAVE, JSON.stringify(mem)); } catch {}
 }
