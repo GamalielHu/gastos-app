@@ -1261,7 +1261,7 @@ async function ocrTexto(img, avance) {
     const base = new URL('./vendor/tesseract/', location.href).href;
     const { default: Tesseract } = await import('../vendor/tesseract/tesseract.esm.min.js');
     ocrWorker = Tesseract.createWorker('spa', 1, {
-      workerPath: base + 'worker.min.js', corePath: base, langPath: base + 'lang', gzip: true,
+      workerPath: base + 'worker.min.js', corePath: base, langPath: base + 'lang', gzip: false,
       logger: (l) => { if (l.status === 'recognizing text') avance(l.progress); },
     }).catch((e) => { ocrWorker = null; throw e; });
   }
