@@ -3,7 +3,7 @@ import { PALETA, esc, money, num, signed, parseMonto, today, isoDate, mesNombre,
 import { pieChart } from './pie.js';
 import { I, iconCuenta } from './icons.js';
 import { createLocalBackend } from './local-backend.js';
-import { analizarComprobante, hashesBeneficiario, buscarGasto, recordarGasto } from './ocr-comprobantes.js';
+import { analizarComprobante, clavesBeneficiario, buscarGasto, recordarGasto } from './ocr-comprobantes.js';
 
 /* ---------- Valores por defecto ---------- */
 const ETIQUETAS_DEF = {
@@ -852,7 +852,7 @@ function movSheet(mov, preset = {}) {
       const d = collect(); if (!d) return;
       if (editing) S.backend.set('movimientos', mov.id, d); else S.backend.add('movimientos', d);
       localSet('ultimaCuenta', d.cuentaId);
-      // Solo el hash del beneficiario queda en este dispositivo; el nombre no se guarda en el movimiento.
+      // La memoria del beneficiario queda solo en este dispositivo; el nombre no se guarda en el movimiento.
       if (cp && d.tipo === 'gasto') { recordarGasto(preset.benef, d); preset.benef = null; }
       toast(editing ? 'Cambios guardados' : `${d.tipo === 'gasto' ? 'Gasto' : d.tipo === 'ingreso' ? 'Ingreso' : 'Transferencia'} de ${money(d.monto)} guardado`);
       if (otro) {
@@ -1281,13 +1281,13 @@ async function leerComprobante(img) {
   if (!sheetOpen) return; // el usuario cerró la hoja
   if (!texto.trim()) toast('No se pudo leer el comprobante');
   const r = analizarComprobante(texto);
-  const benef = await hashesBeneficiario(r.beneficiario);
-  r.beneficiario = null; texto = ''; // el nombre se descarta aquí
+  const benef = clavesBeneficiario(r.beneficiario);
+  r.beneficiario = null; texto = '';
   const prev = buscarGasto(benef) || {};
   movSheet(null, {
     comprobante: true, tipo: 'gasto', benef,
-    fecha: r.fecha || today(), monto: r.monto,
-    etiqueta: prev.etiqueta || '', cuentaId: prev.cuentaId || null, proyectoId: prev.proyectoId || null,
+    fecha: r.fecha, monto: r.monto,
+    etiqueta: prev.etiquetaId || '', cuentaId: prev.cuentaId || null, proyectoId: prev.proyectoId || null,
   });
 }
 
