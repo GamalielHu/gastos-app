@@ -289,8 +289,8 @@ function movRow(m, { showProy = true } = {}) {
   const st = saldoTras(m);
   return `<button class="mov-row" data-mov="${m.id}">
     <span class="mr-ic ${m.tipo}" ${m.tipo === 'transferencia' ? '' : `style="--c:${colorEtiqueta(m.etiqueta)}"`}>${m.tipo === 'transferencia' ? I.transfer : esc([...(m.etiqueta || '?')][0].toUpperCase())}</span>
-    <span class="mr-main"><span class="mr-title">${titulo}${chip}</span>${desc}<span class="mr-sub">${sub.join(' · ')}</span></span>
-    <span class="mr-amt-col"><span class="mr-amt ${m.tipo}">${signed(m.monto, m.tipo)}</span>${st != null ? `<small class="saldo-posterior">Saldo ${money(st)}</small>` : ''}</span>
+    <span class="mr-main col-info"><span class="mr-title">${titulo}</span>${chip}${desc}<span class="mr-sub">${sub.join(' · ')}</span></span>
+    <span class="mr-amt-col col-monto"><span class="mr-amt ${m.tipo}">${signed(m.monto, m.tipo)}</span>${st != null ? `<small class="saldo-posterior">Saldo ${money(st)}</small>` : ''}</span>
   </button>`;
 }
 
